@@ -268,19 +268,31 @@ const $ = id => document.getElementById(id);
 // ── Supabase (whole-board jsonb, upsert + task-level merge) ──
 const HEADERS = { 'apikey':SB_KEY, 'Authorization':`Bearer ${SB_KEY}`, 'Content-Type':'application/json' };
 
+let lastUpdatedAt = null;   // last-seen row timestamp — used to skip redundant full downloads
 async function serverGet(){
-  const r = await fetch(`${SB_URL}/rest/v1/${TABLE}?id=eq.${encodeURIComponent(ROW_ID)}&select=data`, { headers:HEADERS });
+  const r = await fetch(`${SB_URL}/rest/v1/${TABLE}?id=eq.${encodeURIComponent(ROW_ID)}&select=data,updated_at`, { headers:HEADERS });
   if(!r.ok) throw new Error(`load ${r.status}`);
   const rows = await r.json();
+  lastUpdatedAt = rows[0]?.updated_at || lastUpdatedAt;
   return rows[0]?.data || { tasks: [] };
 }
+// Tiny fetch (just the timestamp) to check whether the board changed before pulling the whole blob
+async function serverTimestamp(){
+  const r = await fetch(`${SB_URL}/rest/v1/${TABLE}?id=eq.${encodeURIComponent(ROW_ID)}&select=updated_at`, { headers:HEADERS });
+  if(!r.ok) throw new Error(`meta ${r.status}`);
+  const rows = await r.json();
+  return rows[0]?.updated_at || null;
+}
 async function serverPut(data){
-  const r = await fetch(`${SB_URL}/rest/v1/${TABLE}`, {
+  // Ask only for updated_at back (not the whole row) so saves stay cheap
+  const r = await fetch(`${SB_URL}/rest/v1/${TABLE}?select=updated_at`, {
     method:'POST',
-    headers:{ ...HEADERS, 'Prefer':'resolution=merge-duplicates,return=minimal' },
+    headers:{ ...HEADERS, 'Prefer':'resolution=merge-duplicates,return=representation' },
     body: JSON.stringify({ id:ROW_ID, data, updated_at:new Date().toISOString() })
   });
   if(!r.ok) throw new Error(`save ${r.status}`);
+  const rows = await r.json();
+  lastUpdatedAt = (rows[0] && rows[0].updated_at) || lastUpdatedAt;
 }
 
 function ensureShape(s){
@@ -308,11 +320,19 @@ async function save(){
   if(saving){ savePending = true; return; }
   saving = true; setSync('saving');
   try{
-    const server = ensureShape(await serverGet());
-    const byId = new Map(server.tasks.map(t=>[t.id,t]));
-    for(const id of dirty){ const local = store.tasks.find(t=>t.id===id); if(local) byId.set(id, local); }
-    for(const id of deleted) byId.delete(id);
-    const merged = { ...server, title: store.title || server.title, tasks:[...byId.values()] };
+    let merged;
+    const ts = await serverTimestamp();
+    if(ts && ts === lastUpdatedAt){
+      // Nobody else changed the board since our last sync — write local state directly (no full re-read)
+      merged = ensureShape({ ...store });
+    }else{
+      // Someone else wrote — pull latest and merge only our dirty/deleted on top
+      const server = ensureShape(await serverGet());
+      const byId = new Map(server.tasks.map(t=>[t.id,t]));
+      for(const id of dirty){ const local = store.tasks.find(t=>t.id===id); if(local) byId.set(id, local); }
+      for(const id of deleted) byId.delete(id);
+      merged = { ...server, title: store.title || server.title, tasks:[...byId.values()] };
+    }
     await serverPut(merged);
     dirty.clear(); deleted.clear();
     store = ensureShape(merged);
@@ -514,7 +534,14 @@ async function boot(){
   $('f-title').addEventListener('keydown', e=>{ if(e.key==='Enter'){ e.preventDefault(); saveModal(); } });
   document.addEventListener('keydown', e=>{ if(e.key==='Escape' && $('modal-overlay').classList.contains('show')) closeModal(); });
   try{ await load(); }catch(e){ console.error(e); setSync('error'); toast('Could not connect to Supabase'); }
-  refreshTimer = setInterval(()=>{ if(!saving && !dirty.size && !$('modal-overlay').classList.contains('show')) load().catch(()=>{}); }, 15000);
+  refreshTimer = setInterval(pollIfChanged, 30000);
+  document.addEventListener('visibilitychange', ()=>{ if(!document.hidden) pollIfChanged(); });
+}
+
+// Cheap poll: skip when hidden/mid-edit, and only pull the full board when the timestamp changed
+async function pollIfChanged(){
+  if(document.hidden || saving || dirty.size || $('modal-overlay').classList.contains('show')) return;
+  try{ const ts = await serverTimestamp(); if(ts && ts !== lastUpdatedAt) await load(); }catch{}
 }
 boot();
 </script>
