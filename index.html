@@ -1,0 +1,522 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hackathon Board</title>
+<!--
+  ┌──────────────────────────────────────────────────────────────────────────┐
+  │  SIMPLE HACKATHON KANBAN — standalone, single file.                        │
+  │                                                                            │
+  │  SETUP (one time):                                                         │
+  │  1. Create a NEW Supabase project at https://supabase.com (free tier).     │
+  │  2. In the project's SQL editor, run:                                      │
+  │                                                                            │
+  │     create table if not exists board (                                     │
+  │       id text primary key,                                                 │
+  │       data jsonb not null default '{}'::jsonb,                             │
+  │       updated_at timestamptz default now()                                 │
+  │     );                                                                      │
+  │     alter table board enable row level security;                           │
+  │     create policy "anon_all" on board for all to anon                      │
+  │       using (true) with check (true);                                      │
+  │     insert into board (id, data) values ('main', '{"tasks":[]}')           │
+  │       on conflict (id) do nothing;                                         │
+  │                                                                            │
+  │  3. In Supabase → Project Settings → API, copy the Project URL and the     │
+  │     publishable/anon key, and paste them into the CONFIG block below.      │
+  │  4. Open this file in a browser, or host it (GitHub Pages, Netlify, etc.). │
+  │                                                                            │
+  │  NOTE: the anon key + open RLS policy means anyone with this page can      │
+  │  read/write the board. That's fine for a shared hackathon board; don't     │
+  │  put anything sensitive in it.                                             │
+  └──────────────────────────────────────────────────────────────────────────┘
+-->
+<style>
+  /* ── CONFIG lives in the <script> at the bottom ── */
+  :root{
+    --bg:#f4f5f7; --panel:#ffffff; --panel2:#f0f1f4; --col:#ebecf0;
+    --text:#172b4d; --muted:#5e6c84; --dim:#97a0af; --border:#dfe1e6;
+    --accent:#5b8def; --accent-ink:#fff;
+    --shadow:0 1px 2px rgba(9,30,66,.12),0 0 1px rgba(9,30,66,.10);
+    --shadow-lg:0 8px 24px rgba(9,30,66,.18);
+    --pri-high:#e5493a; --pri-med:#f0a132; --pri-low:#4bce97;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#0f1115; --panel:#1c1f26; --panel2:#22262f; --col:#181b21;
+      --text:#e6e8eb; --muted:#9aa4b2; --dim:#6b7382; --border:#2b2f38;
+      --accent:#5b8def; --accent-ink:#fff;
+      --shadow:0 1px 2px rgba(0,0,0,.4); --shadow-lg:0 12px 32px rgba(0,0,0,.5);
+    }
+  }
+  :root[data-theme="light"]{
+    --bg:#f4f5f7; --panel:#fff; --panel2:#f0f1f4; --col:#ebecf0;
+    --text:#172b4d; --muted:#5e6c84; --dim:#97a0af; --border:#dfe1e6;
+    --shadow:0 1px 2px rgba(9,30,66,.12),0 0 1px rgba(9,30,66,.10); --shadow-lg:0 8px 24px rgba(9,30,66,.18);
+  }
+  :root[data-theme="dark"]{
+    --bg:#0f1115; --panel:#1c1f26; --panel2:#22262f; --col:#181b21;
+    --text:#e6e8eb; --muted:#9aa4b2; --dim:#6b7382; --border:#2b2f38;
+    --shadow:0 1px 2px rgba(0,0,0,.4); --shadow-lg:0 12px 32px rgba(0,0,0,.5);
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    display:flex; flex-direction:column; height:100vh; overflow:hidden;
+  }
+  /* ── HEADER ── */
+  header{
+    display:flex; align-items:center; gap:1rem; padding:.7rem 1.1rem;
+    background:var(--panel); border-bottom:1px solid var(--border); flex-shrink:0;
+  }
+  .brand{display:flex; align-items:center; gap:.55rem; min-width:0}
+  .brand .logo{font-size:1.35rem}
+  .brand h1{
+    font-size:1.02rem; font-weight:700; letter-spacing:-.01em; white-space:nowrap;
+    overflow:hidden; text-overflow:ellipsis;
+  }
+  .brand input.title-edit{
+    font:inherit; font-size:1.02rem; font-weight:700; color:var(--text);
+    background:var(--panel2); border:1px solid var(--border); border-radius:6px; padding:.15rem .45rem;
+  }
+  .spacer{flex:1}
+  .sync{font-size:.72rem; color:var(--dim); white-space:nowrap; font-variant-numeric:tabular-nums}
+  .btn{
+    font:inherit; font-size:.82rem; font-weight:600; cursor:pointer;
+    border:1px solid var(--border); background:var(--panel2); color:var(--text);
+    border-radius:7px; padding:.42rem .7rem; display:inline-flex; align-items:center; gap:.35rem;
+    transition:background .12s, border-color .12s, transform .05s;
+  }
+  .btn:hover{border-color:var(--accent)}
+  .btn:active{transform:translateY(1px)}
+  .btn.primary{background:var(--accent); color:var(--accent-ink); border-color:var(--accent)}
+  .btn.primary:hover{filter:brightness(1.06)}
+  .btn.icon{padding:.42rem .5rem}
+  /* ── BOARD ── */
+  .board{
+    flex:1; display:flex; gap:.8rem; padding:1rem; overflow-x:auto; overflow-y:hidden; align-items:flex-start;
+  }
+  .column{
+    background:var(--col); border-radius:12px; width:320px; min-width:288px; max-width:340px;
+    display:flex; flex-direction:column; max-height:100%; flex-shrink:0;
+  }
+  .col-head{
+    display:flex; align-items:center; gap:.5rem; padding:.7rem .85rem .5rem;
+  }
+  .col-dot{width:9px; height:9px; border-radius:50%; flex-shrink:0}
+  .col-head h2{font-size:.82rem; font-weight:700; letter-spacing:.01em; text-transform:uppercase; color:var(--muted)}
+  .col-count{
+    font-size:.7rem; font-weight:700; color:var(--dim); background:var(--panel2);
+    border-radius:20px; padding:.05rem .45rem; min-width:1.4em; text-align:center;
+  }
+  .col-add{margin-left:auto; font-size:1.1rem; line-height:1; color:var(--muted); cursor:pointer;
+    background:none; border:none; padding:.1rem .3rem; border-radius:6px}
+  .col-add:hover{background:var(--panel2); color:var(--accent)}
+  .cards{
+    flex:1; overflow-y:auto; padding:.25rem .55rem .7rem; display:flex; flex-direction:column; gap:.5rem;
+    min-height:20px;
+  }
+  .cards.drag-over{background:rgba(91,141,239,.08); border-radius:8px}
+  .card{
+    background:var(--panel); border-radius:9px; padding:.6rem .7rem; box-shadow:var(--shadow);
+    border-left:3px solid transparent; cursor:pointer; position:relative;
+    transition:box-shadow .12s, transform .05s;
+  }
+  .card:hover{box-shadow:var(--shadow-lg)}
+  .card.dragging{opacity:.45}
+  .card[data-pri="high"]{border-left-color:var(--pri-high)}
+  .card[data-pri="med"]{border-left-color:var(--pri-med)}
+  .card[data-pri="low"]{border-left-color:var(--pri-low)}
+  .card-title{font-size:.86rem; font-weight:500; line-height:1.35; word-break:break-word}
+  .card-notes{font-size:.75rem; color:var(--muted); margin-top:.3rem; line-height:1.35;
+    display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden}
+  .card-foot{display:flex; align-items:center; gap:.4rem; margin-top:.5rem; flex-wrap:wrap}
+  .pill{font-size:.66rem; font-weight:700; letter-spacing:.02em; text-transform:uppercase;
+    padding:.1rem .4rem; border-radius:5px}
+  .pill.high{background:rgba(229,73,58,.15); color:var(--pri-high)}
+  .pill.med{background:rgba(240,161,50,.16); color:var(--pri-med)}
+  .pill.low{background:rgba(75,206,151,.16); color:#2f9e6f}
+  .owner{display:inline-flex; align-items:center; gap:.3rem; margin-left:auto; font-size:.72rem; color:var(--muted)}
+  .avatar{width:20px; height:20px; border-radius:50%; background:var(--accent); color:#fff;
+    display:inline-flex; align-items:center; justify-content:center; font-size:.62rem; font-weight:700}
+  .empty-col{color:var(--dim); font-size:.75rem; text-align:center; padding:1rem .5rem; font-style:italic}
+  /* ── MODAL ── */
+  .overlay{position:fixed; inset:0; background:rgba(9,30,66,.55); backdrop-filter:blur(2px);
+    display:none; align-items:center; justify-content:center; padding:1rem; z-index:50}
+  .overlay.show{display:flex}
+  .modal{background:var(--panel); border-radius:14px; box-shadow:var(--shadow-lg);
+    width:100%; max-width:440px; padding:1.2rem 1.3rem 1.3rem; border:1px solid var(--border)}
+  .modal h3{font-size:1.02rem; margin-bottom:.9rem}
+  .field{margin-bottom:.75rem}
+  .field label{display:block; font-size:.72rem; font-weight:700; text-transform:uppercase;
+    letter-spacing:.03em; color:var(--muted); margin-bottom:.3rem}
+  .field input, .field select, .field textarea{
+    width:100%; font:inherit; font-size:.86rem; color:var(--text); background:var(--panel2);
+    border:1px solid var(--border); border-radius:8px; padding:.5rem .6rem; outline:none;
+  }
+  .field input:focus, .field select:focus, .field textarea:focus{border-color:var(--accent)}
+  .field textarea{resize:vertical; min-height:64px}
+  .row2{display:grid; grid-template-columns:1fr 1fr; gap:.7rem}
+  .modal-foot{display:flex; gap:.5rem; margin-top:1.1rem; align-items:center}
+  .modal-foot .spacer{flex:1}
+  .btn.danger{color:var(--pri-high); border-color:transparent; background:transparent}
+  .btn.danger:hover{background:rgba(229,73,58,.12); border-color:transparent}
+  /* ── SETUP / TOAST ── */
+  .setup{max-width:640px; margin:auto; padding:2rem; text-align:center}
+  .setup code{background:var(--panel2); padding:.1rem .35rem; border-radius:5px; font-size:.85em}
+  .setup pre{text-align:left; background:var(--panel); border:1px solid var(--border);
+    border-radius:10px; padding:1rem; overflow-x:auto; font-size:.78rem; margin:1rem 0; line-height:1.5}
+  #toast{position:fixed; bottom:1.2rem; left:50%; transform:translateX(-50%) translateY(2rem);
+    background:var(--text); color:var(--bg); padding:.55rem 1rem; border-radius:8px; font-size:.82rem;
+    font-weight:600; opacity:0; pointer-events:none; transition:.25s; z-index:60}
+  #toast.show{opacity:1; transform:translateX(-50%) translateY(0)}
+  @media (max-width:640px){
+    .board{flex-direction:column; overflow-y:auto; overflow-x:hidden}
+    .column{width:100%; max-width:100%; min-width:0}
+    .row2{grid-template-columns:1fr}
+  }
+</style>
+</head>
+<body>
+
+<header id="app-header" style="display:none">
+  <div class="brand">
+    <span class="logo">🚀</span>
+    <h1 id="board-title" title="Click to rename">Hackathon Board</h1>
+  </div>
+  <div class="spacer"></div>
+  <span class="sync" id="sync">connecting…</span>
+  <button class="btn icon" id="theme-btn" title="Toggle theme">🌓</button>
+  <button class="btn icon" id="refresh-btn" title="Refresh">↻</button>
+  <button class="btn primary" id="add-btn">+ New task</button>
+</header>
+
+<div class="board" id="board" style="display:none"></div>
+
+<div class="setup" id="setup" style="display:none"></div>
+
+<!-- Task modal -->
+<div class="overlay" id="modal-overlay">
+  <div class="modal">
+    <h3 id="modal-title">New task</h3>
+    <div class="field">
+      <label>Title</label>
+      <input type="text" id="f-title" placeholder="What needs doing?" autocomplete="off">
+    </div>
+    <div class="row2">
+      <div class="field">
+        <label>Column</label>
+        <select id="f-status"></select>
+      </div>
+      <div class="field">
+        <label>Priority</label>
+        <select id="f-priority">
+          <option value="">None</option>
+          <option value="low">Low</option>
+          <option value="med">Medium</option>
+          <option value="high">High</option>
+        </select>
+      </div>
+    </div>
+    <div class="field">
+      <label>Owner (optional)</label>
+      <input type="text" id="f-owner" placeholder="Who's on it?" autocomplete="off">
+    </div>
+    <div class="field">
+      <label>Notes (optional)</label>
+      <textarea id="f-notes" placeholder="Details, links, acceptance criteria…"></textarea>
+    </div>
+    <div class="modal-foot">
+      <button class="btn danger" id="f-delete" style="display:none">Delete</button>
+      <div class="spacer"></div>
+      <button class="btn" id="f-cancel">Cancel</button>
+      <button class="btn primary" id="f-save">Save</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+// ════════════════════════════════════════════════════════════════════════════
+//  CONFIG — paste your NEW Supabase project's values here
+// ════════════════════════════════════════════════════════════════════════════
+const SB_URL  = 'https://YOUR-PROJECT.supabase.co';        // Project URL
+const SB_KEY  = 'sb_publishable_0UUXG6oSFNQGv84ENjFPIw_q64fMIPQ';  // publishable / anon key
+const TABLE   = 'board';                                    // table name (from the SQL)
+const ROW_ID  = 'main';                                     // which board row to use
+// ════════════════════════════════════════════════════════════════════════════
+
+const COLUMNS = [
+  { id:'todo',  label:'To Do',        color:'#8993a4' },
+  { id:'doing', label:'In Progress',  color:'#5b8def' },
+  { id:'done',  label:'Done',         color:'#4bce97' },
+];
+
+let store = { tasks: [], title: 'Hackathon Board' };
+let dirty = new Set();      // task ids changed locally since last sync
+let deleted = new Set();    // task ids deleted locally since last sync
+let editingId = null;       // task id being edited in the modal (null = new)
+let refreshTimer = null;
+let saving = false, savePending = false;
+
+const $ = id => document.getElementById(id);
+
+// ── Supabase (whole-board jsonb, upsert + task-level merge) ──
+const HEADERS = { 'apikey':SB_KEY, 'Authorization':`Bearer ${SB_KEY}`, 'Content-Type':'application/json' };
+
+async function serverGet(){
+  const r = await fetch(`${SB_URL}/rest/v1/${TABLE}?id=eq.${encodeURIComponent(ROW_ID)}&select=data`, { headers:HEADERS });
+  if(!r.ok) throw new Error(`load ${r.status}`);
+  const rows = await r.json();
+  return rows[0]?.data || { tasks: [] };
+}
+async function serverPut(data){
+  const r = await fetch(`${SB_URL}/rest/v1/${TABLE}`, {
+    method:'POST',
+    headers:{ ...HEADERS, 'Prefer':'resolution=merge-duplicates,return=minimal' },
+    body: JSON.stringify({ id:ROW_ID, data, updated_at:new Date().toISOString() })
+  });
+  if(!r.ok) throw new Error(`save ${r.status}`);
+}
+
+function ensureShape(s){
+  if(!s.tasks) s.tasks = [];
+  if(!s.title) s.title = 'Hackathon Board';
+  s.tasks.forEach(t=>{ if(!COLUMNS.some(c=>c.id===t.status)) t.status='todo'; if(t.order==null) t.order=t.createdAt||0; });
+  return s;
+}
+
+async function load(){
+  const data = ensureShape(await serverGet());
+  // Keep any locally-dirty tasks on top of what the server returns (don't lose in-flight edits)
+  const byId = new Map(data.tasks.map(t=>[t.id,t]));
+  for(const id of dirty){ const local = store.tasks.find(t=>t.id===id); if(local) byId.set(id, local); }
+  for(const id of deleted) byId.delete(id);
+  store = { ...data, tasks:[...byId.values()] };
+  ensureShape(store);
+  render();
+  setSync('synced');
+}
+
+// Merge-on-save: re-read server, apply only our dirty/deleted, write back.
+// Lets multiple organizers edit at once without clobbering each other.
+async function save(){
+  if(saving){ savePending = true; return; }
+  saving = true; setSync('saving');
+  try{
+    const server = ensureShape(await serverGet());
+    const byId = new Map(server.tasks.map(t=>[t.id,t]));
+    for(const id of dirty){ const local = store.tasks.find(t=>t.id===id); if(local) byId.set(id, local); }
+    for(const id of deleted) byId.delete(id);
+    const merged = { ...server, title: store.title || server.title, tasks:[...byId.values()] };
+    await serverPut(merged);
+    dirty.clear(); deleted.clear();
+    store = ensureShape(merged);
+    render();
+    setSync('saved');
+  }catch(e){
+    console.error(e); setSync('error'); toast('Save failed — will retry');
+  }finally{
+    saving = false;
+    if(savePending){ savePending = false; save(); }
+  }
+}
+
+function setSync(state){
+  const el = $('sync'); const t = new Date().toLocaleTimeString();
+  el.textContent = state==='saving' ? 'saving…'
+    : state==='error' ? '⚠ offline — retrying'
+    : (state==='saved'?'saved ':'synced ') + t;
+}
+
+// ── Rendering ──
+function initials(name){ return (name||'').trim().split(/\s+/).map(w=>w[0]).slice(0,2).join('').toUpperCase() || '?'; }
+
+function render(){
+  const bt = $('board-title'); if(bt) bt.textContent = store.title || 'Hackathon Board';
+  document.title = (store.title || 'Hackathon Board');
+  const board = $('board'); board.innerHTML='';
+  for(const col of COLUMNS){
+    const tasks = store.tasks.filter(t=>t.status===col.id).sort((a,b)=>(a.order||0)-(b.order||0));
+    const column = document.createElement('div'); column.className='column';
+    column.innerHTML =
+      `<div class="col-head">
+        <span class="col-dot" style="background:${col.color}"></span>
+        <h2>${col.label}</h2>
+        <span class="col-count">${tasks.length}</span>
+        <button class="col-add" title="Add to ${col.label}" data-add="${col.id}">+</button>
+      </div>`;
+    const cards = document.createElement('div');
+    cards.className='cards'; cards.dataset.status=col.id;
+    if(!tasks.length){
+      const e = document.createElement('div'); e.className='empty-col'; e.textContent='Drop tasks here'; cards.appendChild(e);
+    }
+    for(const t of tasks) cards.appendChild(buildCard(t));
+    wireDropZone(cards);
+    column.appendChild(cards);
+    board.appendChild(column);
+  }
+  board.querySelectorAll('[data-add]').forEach(b=>b.onclick=()=>openModal(null, b.dataset.add));
+}
+
+function buildCard(t){
+  const card = document.createElement('div');
+  card.className='card'; card.draggable=true; card.dataset.id=t.id;
+  if(t.priority) card.dataset.pri=t.priority;
+  let html = `<div class="card-title">${esc(t.title)}</div>`;
+  if(t.notes) html += `<div class="card-notes">${esc(t.notes)}</div>`;
+  const foot=[];
+  if(t.priority) foot.push(`<span class="pill ${t.priority}">${t.priority}</span>`);
+  if(t.owner) foot.push(`<span class="owner"><span class="avatar">${esc(initials(t.owner))}</span>${esc(t.owner)}</span>`);
+  if(foot.length) html += `<div class="card-foot">${foot.join('')}</div>`;
+  card.innerHTML = html;
+  card.onclick = ()=>openModal(t.id);
+  card.addEventListener('dragstart', e=>{ e.dataTransfer.setData('text/plain', t.id); card.classList.add('dragging'); });
+  card.addEventListener('dragend', ()=>card.classList.remove('dragging'));
+  return card;
+}
+
+// ── Drag & drop ──
+function wireDropZone(zone){
+  zone.addEventListener('dragover', e=>{ e.preventDefault(); zone.classList.add('drag-over'); });
+  zone.addEventListener('dragleave', e=>{ if(!zone.contains(e.relatedTarget)) zone.classList.remove('drag-over'); });
+  zone.addEventListener('drop', e=>{
+    e.preventDefault(); zone.classList.remove('drag-over');
+    const id = e.dataTransfer.getData('text/plain');
+    const task = store.tasks.find(t=>t.id===id); if(!task) return;
+    const newStatus = zone.dataset.status;
+    const after = dragAfter(zone, e.clientY);           // card to insert before (or null = end)
+    task.status = newStatus;
+    // Rebuild order for this column with the dragged task inserted at the drop point
+    const ordered = store.tasks.filter(t=>t.status===newStatus && t.id!==id).sort((a,b)=>(a.order||0)-(b.order||0));
+    const idx = after ? ordered.findIndex(t=>t.id===after.dataset.id) : ordered.length;
+    ordered.splice(idx<0?ordered.length:idx, 0, task);
+    ordered.forEach((t,i)=>{ t.order=i; dirty.add(t.id); });
+    render(); save();
+  });
+}
+function dragAfter(zone, y){
+  const cards = [...zone.querySelectorAll('.card:not(.dragging)')];
+  for(const c of cards){ const box=c.getBoundingClientRect(); if(y < box.top + box.height/2) return c; }
+  return null;
+}
+
+// ── Modal ──
+function openModal(id, presetStatus){
+  editingId = id;
+  const t = id ? store.tasks.find(x=>x.id===id) : null;
+  $('modal-title').textContent = t ? 'Edit task' : 'New task';
+  const sel = $('f-status'); sel.innerHTML = COLUMNS.map(c=>`<option value="${c.id}">${c.label}</option>`).join('');
+  $('f-title').value = t?.title || '';
+  $('f-status').value = t?.status || presetStatus || 'todo';
+  $('f-priority').value = t?.priority || '';
+  $('f-owner').value = t?.owner || '';
+  $('f-notes').value = t?.notes || '';
+  $('f-delete').style.display = t ? '' : 'none';
+  $('modal-overlay').classList.add('show');
+  setTimeout(()=>$('f-title').focus(), 30);
+}
+function closeModal(){ $('modal-overlay').classList.remove('show'); editingId=null; }
+
+function saveModal(){
+  const title = $('f-title').value.trim();
+  if(!title){ $('f-title').focus(); return; }
+  const status = $('f-status').value;
+  const fields = { title, status, priority:$('f-priority').value, owner:$('f-owner').value.trim(), notes:$('f-notes').value.trim() };
+  if(editingId){
+    const t = store.tasks.find(x=>x.id===editingId); if(t){ Object.assign(t, fields); dirty.add(t.id); }
+  }else{
+    const maxOrder = Math.max(-1, ...store.tasks.filter(t=>t.status===status).map(t=>t.order||0));
+    const t = { id:makeId(), ...fields, order:maxOrder+1, createdAt:Date.now() };
+    store.tasks.push(t); dirty.add(t.id);
+  }
+  closeModal(); render(); save();
+}
+function deleteTask(){
+  if(!editingId) return;
+  store.tasks = store.tasks.filter(t=>t.id!==editingId);
+  deleted.add(editingId); dirty.delete(editingId);
+  closeModal(); render(); save();
+}
+
+// ── Board title rename ──
+function renameBoard(){
+  const h = $('board-title');
+  const input = document.createElement('input');
+  input.className='title-edit'; input.value = store.title || 'Hackathon Board';
+  h.replaceWith(input); input.focus(); input.select();
+  const commit = ()=>{
+    const v = input.value.trim() || 'Hackathon Board';
+    store.title = v;
+    const nh = document.createElement('h1'); nh.id='board-title'; nh.title='Click to rename'; nh.textContent=v;
+    nh.onclick = renameBoard;
+    input.replaceWith(nh); document.title = v; save();
+  };
+  input.addEventListener('blur', commit);
+  input.addEventListener('keydown', e=>{ if(e.key==='Enter') commit(); if(e.key==='Escape'){ input.value=store.title||''; commit(); } });
+}
+
+// ── Helpers ──
+function makeId(){ return Math.random().toString(36).slice(2,10); }
+function esc(s){ return (s==null?'':String(s)).replace(/[&<>"']/g, m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
+let toastTimer=null;
+function toast(msg){ const el=$('toast'); el.textContent=msg; el.classList.add('show'); clearTimeout(toastTimer); toastTimer=setTimeout(()=>el.classList.remove('show'),2500); }
+
+// ── Theme toggle ──
+function toggleTheme(){
+  const cur = document.documentElement.getAttribute('data-theme')
+    || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  const next = cur==='dark' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', next);
+  try{ localStorage.setItem('hk_theme', next); }catch{}
+}
+
+// ── Boot ──
+function isConfigured(){ return !SB_URL.includes('YOUR-PROJECT') && !SB_KEY.includes('YOUR-'); }
+
+function showSetup(){
+  $('setup').style.display='block';
+  $('setup').innerHTML = `
+    <div style="font-size:2.5rem;margin-bottom:.5rem">🚀</div>
+    <h2 style="margin-bottom:.5rem">One quick setup step</h2>
+    <p style="color:var(--muted);line-height:1.6">This board needs a Supabase project to save to.
+    Create a free project, run the SQL below in its SQL editor, then paste your Project URL and
+    publishable key into the <code>CONFIG</code> block near the bottom of this HTML file.</p>
+    <pre>create table if not exists board (
+  id text primary key,
+  data jsonb not null default '{}'::jsonb,
+  updated_at timestamptz default now()
+);
+alter table board enable row level security;
+create policy "anon_all" on board for all to anon
+  using (true) with check (true);
+insert into board (id, data) values ('main', '{"tasks":[]}')
+  on conflict (id) do nothing;</pre>
+    <p style="color:var(--dim);font-size:.8rem">Then reload this page.</p>`;
+}
+
+async function boot(){
+  try{ const th=localStorage.getItem('hk_theme'); if(th) document.documentElement.setAttribute('data-theme', th); }catch{}
+  if(!isConfigured()){ showSetup(); return; }
+  $('app-header').style.display='flex'; $('board').style.display='flex';
+  $('add-btn').onclick   = ()=>openModal(null, 'todo');
+  $('refresh-btn').onclick = ()=>load().catch(()=>toast('Refresh failed'));
+  $('theme-btn').onclick = toggleTheme;
+  $('f-cancel').onclick  = closeModal;
+  $('f-save').onclick    = saveModal;
+  $('f-delete').onclick  = deleteTask;
+  $('board-title').onclick = renameBoard;
+  $('modal-overlay').addEventListener('click', e=>{ if(e.target.id==='modal-overlay') closeModal(); });
+  $('f-title').addEventListener('keydown', e=>{ if(e.key==='Enter'){ e.preventDefault(); saveModal(); } });
+  document.addEventListener('keydown', e=>{ if(e.key==='Escape' && $('modal-overlay').classList.contains('show')) closeModal(); });
+  try{ await load(); }catch(e){ console.error(e); setSync('error'); toast('Could not connect to Supabase'); }
+  refreshTimer = setInterval(()=>{ if(!saving && !dirty.size && !$('modal-overlay').classList.contains('show')) load().catch(()=>{}); }, 15000);
+}
+boot();
+</script>
+</body>
+</html>
